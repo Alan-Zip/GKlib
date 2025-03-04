@@ -1,3 +1,14 @@
+/*
+ * MODIFIED: This file has been modified from its original version in GKlib.
+ * Changes made by: Alan Zhu (hanyuanz96@gmail.com)
+ * Date: 2025-03-04
+ *
+ * Summary of Changes:
+ * - Added per-thread RNG state to improve thread safety.
+ *
+ * Original file: https://github.com/KarypisLab/GKlib/blob/master/random.c
+ */
+
 /*!
 \file  
 \brief Various routines for providing portable 32 and 64 bit random number
@@ -63,19 +74,26 @@ GK_MKRANDOM(gk_zu,  size_t, size_t)
 #define LM 0x7FFFFFFFULL /* Least significant 31 bits */
 
 
-/* The array for the state vector */
-static uint64_t mt[NN]; 
-/* mti==NN+1 means mt[NN] is not initialized */
-static int mti=NN+1; 
+typedef struct {
+    /* The array for the state vector */
+    uint64_t mt[NN];
+    int mti;
+    int initialized;
+} gk_rng_t;
+
+/* Per-thread RNG state */
+static __thread gk_rng_t tls_rng;
 #endif /* USE_GKRAND */
 
 /* initializes mt[NN] with a seed */
 void gk_randinit(uint64_t seed)
 {
 #ifdef USE_GKRAND
-  mt[0] = seed;
-  for (mti=1; mti<NN; mti++) 
-    mt[mti] = (6364136223846793005ULL * (mt[mti-1] ^ (mt[mti-1] >> 62)) + mti);
+  gk_rng_t *rng = &tls_rng;
+  rng->initialized = 1;
+  rng->mt[0] = seed;
+  for (rng->mti=1; rng->mti<NN; rng->mti++)
+    rng->mt[rng->mti] = (6364136223846793005ULL * (rng->mt[rng->mti-1] ^ (rng->mt[rng->mti-1] >> 62)) + rng->mti);
 #else
   srand((unsigned int) seed);
 #endif
@@ -86,31 +104,33 @@ void gk_randinit(uint64_t seed)
 uint64_t gk_randint64(void)
 {
 #ifdef USE_GKRAND
+  gk_rng_t *rng = &tls_rng;
+  
   int i;
   unsigned long long x;
   static uint64_t mag01[2]={0ULL, MATRIX_A};
+    
+  /* if init_genrand64() has not been called, */
+  /* a default initial seed is used     */
+  if (!rng->initialized)
+    gk_randinit(5489ULL);
 
-  if (mti >= NN) { /* generate NN words at one time */
-    /* if init_genrand64() has not been called, */
-    /* a default initial seed is used     */
-    if (mti == NN+1) 
-      gk_randinit(5489ULL); 
-
+  if (rng->mti >= NN) { /* generate NN words at one time */
     for (i=0; i<NN-MM; i++) {
-      x = (mt[i]&UM)|(mt[i+1]&LM);
-      mt[i] = mt[i+MM] ^ (x>>1) ^ mag01[(int)(x&1ULL)];
+      x = (rng->mt[i]&UM)|(rng->mt[i+1]&LM);
+        rng->mt[i] = rng->mt[i+MM] ^ (x>>1) ^ mag01[(int)(x&1ULL)];
     }
     for (; i<NN-1; i++) {
-      x = (mt[i]&UM)|(mt[i+1]&LM);
-      mt[i] = mt[i+(MM-NN)] ^ (x>>1) ^ mag01[(int)(x&1ULL)];
+      x = (rng->mt[i]&UM)|(rng->mt[i+1]&LM);
+      rng->mt[i] = rng->mt[i+(MM-NN)] ^ (x>>1) ^ mag01[(int)(x&1ULL)];
     }
-    x = (mt[NN-1]&UM)|(mt[0]&LM);
-    mt[NN-1] = mt[MM-1] ^ (x>>1) ^ mag01[(int)(x&1ULL)];
+    x = (rng->mt[NN-1]&UM)|(rng->mt[0]&LM);
+    rng->mt[NN-1] = rng->mt[MM-1] ^ (x>>1) ^ mag01[(int)(x&1ULL)];
 
-    mti = 0;
+    rng->mti = 0;
   }
 
-  x = mt[mti++];
+  x = rng->mt[rng->mti++];
 
   x ^= (x >> 29) & 0x5555555555555555ULL;
   x ^= (x << 17) & 0x71D67FFFEDA60000ULL;
